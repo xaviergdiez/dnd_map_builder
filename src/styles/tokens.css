@@ -1,0 +1,46 @@
+:root {
+  /* Card-game graphic style rather than antique parchment: bold black rounded
+     card frames, a pill-shaped title banner, chunky display type, and bold
+     uppercase stat labels with divider rules. */
+  --color-parchment: #f1ece0;
+  --color-ink: #1a1a1a;
+  --color-ink-soft: #4a4636;
+
+  --color-gold: #b8893f;
+  --color-gold-light: #d9b878;
+
+  --color-bg: var(--color-parchment);
+  --color-surface: #fdfcf9;
+  --color-surface-alt: #efe9d8;
+  --color-border: #1a1a1a;
+  --color-border-light: #d8d0ba;
+  --color-text: var(--color-ink);
+  --color-text-muted: #6a6453;
+  --color-text-on-dark: #fdfcf9;
+  --color-text-on-dark-muted: #cfc6aa;
+
+  --color-accent: var(--color-ink);
+
+  --color-positive-bg: #eef1e2;
+  --color-positive-text: #3c5a1e;
+  --color-negative-bg: #f3e4df;
+  --color-negative-text: #7a2f20;
+  --color-none-bg: #ece5cf;
+  --color-none-text: #6a6453;
+
+  --font-display: "Fredoka", sans-serif;
+  --font-body: "Plus Jakarta Sans", sans-serif;
+
+  --border-width: 3px;
+  --border-width-lg: 4px;
+  --radius-sm: 6px;
+  --radius-md: 18px;
+  --radius-pill: 999px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  --shadow-card: 0 2px 0 rgba(0, 0, 0, 0.15), 0 6px 14px rgba(0, 0, 0, 0.1);
+}

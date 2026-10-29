@@ -1,0 +1,81 @@
+/* The base layer, taken from dnd_multi-user's global.css: the same reset, the
+   same paper-form inputs, the same type. What it leaves out is that app's
+   character-sheet furniture; the map's own rules are in map.css. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+body {
+  background: var(--color-bg);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 1px;
+}
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  padding: 0;
+  accent-color: var(--color-gold);
+}
+
+/* Number fields have their own steppers or are typed directly; the browser's
+   native spinner just gets in the way. */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+}

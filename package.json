@@ -1,0 +1,24 @@
+{
+  "name": "dnd-battle-map-builder",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "rules": "node scripts/build-rules.mjs",
+    "textures": "node scripts/gen-textures.mjs",
+    "check": "for f in src/*.check.mjs lib/*.check.mjs scripts/*.check.mjs; do node $f || exit 1; done"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "dnd-data": "^1.0.0",
+    "sharp": "^0.35.5",
+    "vite": "^5.4.11"
+  }
+}
