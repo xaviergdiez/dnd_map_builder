@@ -114,7 +114,10 @@ export const slotOfRole = (role) => {
    shapes and stripes a square always falls back to, and a ground the DM
    generates carries its own sheet. Drop a sheet in art/sprites, add the line
    here and run tools/slice-sprites.mjs. */
-export const SHEET_FOR_THEME = {};
+export const SHEET_FOR_THEME = {
+  catacombs: 'crypt', cavern: 'cavern', cobbles: 'cobblestones', desert: 'desert',
+  swamp: 'swamp', tundra: 'tundra', volcanic: 'embers'
+};
 
 /* ---- which picture an element gets ----
 
