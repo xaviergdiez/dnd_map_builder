@@ -180,16 +180,16 @@ Outdoor grounds work with the same tools: a "wall" there is terrain and a
 ## Props
 
 Doors, barrels, pillars, fires and thickets are drawn as **flat shapes** unless
-a ground has a prop sheet. Seven of the built-in ten (crypt, cavern, cobbles, desert, swamp, tundra, volcanic) ship with one, cut into `public/maps/tokens/<theme>/`; the masters stay in `art/sprites/`, which is not deployed; a ground you
+a ground has a prop sheet. All ten built-in grounds ship with one, cut into `public/maps/tokens/<theme>/`; the masters stay in `art/sprites/`, which is not deployed; a ground you
 generate can have its own (**Generate matching props**, in the Ground panel, once a floor is previewed), asked for
 as ONE 4x4 sheet so the sixteen share a palette and a light. To ship a sheet
 with a built-in theme, put it in `art/sprites/`, name it in `SHEET_FOR_THEME`
 (`src/spritesheet.js`) and run `node tools/slice-sprites.mjs`.
 
-**Floors from Gemini.** Nine of the ten floors in `public/maps/*.jpg` are Gemini
-renders (masters in `art/textures/`, recompressed to 1024px JPEG q84); only
-`dungeon` is still procedural. `npm run textures` rewrites all ten procedural
-ones, so pass `--only dungeon` unless you mean to replace the Gemini floors.
+**Floors from Gemini.** All ten floors in `public/maps/*.jpg` are Gemini
+renders (masters in `art/textures/`, recompressed to 1024px JPEG q84).
+`npm run textures` regenerates procedural stand-ins for all ten and would
+overwrite them, so do not run it unless you mean to replace the Gemini floors.
 
 ## Overlay art
 

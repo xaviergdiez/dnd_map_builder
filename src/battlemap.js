@@ -53,7 +53,7 @@ const T = (id, name, subtitle, grid, accent, fallback, desc, wash = 0.25, gridAl
 
 export const MAP_THEMES = [
   T('dungeon', 'Dungeon', 'Worn flagstones, mortar seams, old straw',
-    '#e6d9b8', '#c0552a', '#534f47',
+    '#e6d9b8', '#c0552a', '#3b3b34',
     'Cut stone laid by people long dead, and walked on by whatever came after.'),
   T('catacombs', 'Crypt', 'Pale marble slabs, bone dust, cracked inlay',
     '#2e342e', '#4a6a48', '#aea799',

@@ -116,7 +116,8 @@ export const slotOfRole = (role) => {
    here and run tools/slice-sprites.mjs. */
 export const SHEET_FOR_THEME = {
   catacombs: 'crypt', cavern: 'cavern', cobbles: 'cobblestones', desert: 'desert',
-  swamp: 'swamp', tundra: 'tundra', volcanic: 'embers'
+  dungeon: 'dungeon', forest: 'forest', swamp: 'swamp', tavern: 'tavern',
+  tundra: 'tundra', volcanic: 'embers'
 };
 
 /* ---- which picture an element gets ----
