@@ -17,6 +17,7 @@ import {
   setStartRoom, startPlay, playDoor, regionAt
 } from './battlemap.js';
 import { NOISE, noiseById, noisePing } from './awareness.js';
+import { load, save } from './store.js';
 import { overlayOf, overlayKindFor, FEET_PER_SQUARE, CONE_HALF_ANGLE_DEG, coverDegree, footprintSquares } from './rules.js';
 import { WEAPONS, SPELLS, MONSTERS, entryFor, weaponKey, spellKey, spellLabel, monsterByName, monsterLabel } from './library.js';
 import { shrinkToDataUrl, prepareTexture } from './imageshrink.js';
@@ -544,6 +545,10 @@ export default function BattleMap({
   // of it is no smoke at all. Apart from the brush so changing one is not
   // changing the other.
   const [cloud, setCloud] = useState(3);
+  // How the fog tool works is told once, as a tip the DM dismisses, rather
+  // than as a paragraph under the toolbar every time the tool is picked.
+  const [tipSeen, setTipSeen] = useState(() => load('tipFog', false) === true);
+  const dismissTip = () => { setTipSeen(true); save('tipFog', true); };
   /* A VIEW control, deliberately not stored on the map. px/square is the
      projector's calibration and must not move; zoom scales what is already
      drawn so the GM can read a corner or take in the whole deck. On the
@@ -3772,18 +3777,21 @@ export default function BattleMap({
           <button type="button" className="bm-btn"
             onClick={() => patch({ explored: {} })}>Hide all</button>
           {num('Sense ft', senseFt, setSenseFt, 5, 2500, 5)}
-          <span className="bm-hint">
-            Click a DOOR to change it: closed, then open, then jammed, then closed
-            again (right-click a door to set it directly). Opening one lights the
-            room beyond; shutting it again hides that room, not the way back, as if
-            the party had fallen back and pulled it to. A jammed door blocks like
-            a shut one. Click a room to
-            reveal it by hand. Ctrl-click takes a place back, drag reveals square by
-            square, alt-click reveals line of sight from a square, and shift-click
-            is a sense sweep, the way Detect Magic does it — it reads through walls
-            and pings contacts without opening the map.
-            {m.start ? '' : ' Pick a starting room with the flag tool and turning the fog on opens on it instead of in the dark.'}
-          </span>
+          {!tipSeen && (
+            <div className="bm-tip" role="note">
+              <span>
+                <strong>Tip.</strong> Click a door to change it: closed, open, jammed,
+                closed again (right-click a door to set it directly). Opening one lights
+                the room beyond; shutting it hides that room, not the way back. A jammed
+                door blocks like a shut one. Click a room to reveal it by hand, Ctrl-click
+                takes a place back, drag reveals square by square, alt-click reveals line
+                of sight from a square, and shift-click is a sense sweep, the way Detect
+                Magic does it. Pick a starting room with the flag tool and turning the fog
+                on opens on it instead of in the dark.
+              </span>
+              <button type="button" className="bm-btn" onClick={dismissTip}>Got it</button>
+            </div>
+          )}
         </>)}
 
         {(mode === 'overlay' || mode === 'measure') && (<>

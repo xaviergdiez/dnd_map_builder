@@ -733,3 +733,23 @@
 .bm-tab {
   min-width: 64px;
 }
+
+/* A one-time tip: shown until the DM dismisses it, then never again. */
+.bm-tip {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 12px;
+  line-height: 1.45;
+  /* Its own ink: full screen and the projector window set pale text. */
+  color: var(--color-ink);
+  background: var(--color-gold-light);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.bm-tip .bm-btn {
+  flex: 0 0 auto;
+}
