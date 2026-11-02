@@ -316,6 +316,11 @@ export const EMPTY_MAP = {
   // it again brings the room back. Nothing is forgotten to do that — see
   // visibleExplored.
   viewpoint: null,
+  /* THE STARTING ROOM. A square inside the room the party arrives in, chosen
+     by the DM while the map is built. Starting play lights that room and puts
+     the party in it, so a session opens on somewhere rather than on a black
+     rectangle. null means nobody chose, and the map starts dark. */
+  start: null,
   fog: false,
   /* Monsters the DM has hidden on the map. THESE ARE NOT TOKENS: the fight is
      played with miniatures, and a model standing on a square the party has not
@@ -788,6 +793,15 @@ export function readMap(m) {
       const x = Math.round(Number(v.x)), y = Math.round(Number(v.y));
       return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
     })(),
+    // Kept only while it is still a square of the map: erasing the room it
+    // was in leaves a start that points at the void.
+    start: (() => {
+      const v = src.start;
+      if (!v || typeof v !== 'object') return null;
+      const x = Math.round(Number(v.x)), y = Math.round(Number(v.y));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return floor[cellKey(x, y)] ? { x, y } : null;
+    })(),
     floor, doors, cover, hazards, obscuring, markers, explored, contacts, ground
   };
 }
@@ -1068,6 +1082,177 @@ export function concealArea(map, pos) {
   return explored;
 }
 
+/* ------------------------- starting and running a crawl -------------------------
+   Three small things make a map playable without the GM having to
+   open the fog tool and click the first room by hand.
+
+   THE START. setStartRoom picks the room the party arrives in. startPlay turns
+   it into the fog state a session opens with: the room lit, the party in it,
+   everything else dark.
+
+   THE DOORS. playDoor is what a click on a door does during play. It changes
+   the door's state, and when that opens it, brings in what is beyond. */
+
+/* The start the map should have after the GM clicks `pos`. A room, not a
+   doorway; clicking inside the room that already is the start takes the choice
+   back, so one tool sets it and clears it. */
+export function setStartRoom(map, pos) {
+  const m = readMap(map);
+  if (!pos) return m.start;
+  const k = cellKey(pos.x, pos.y);
+  if (!m.floor[k] || m.doors[k]) return m.start;
+  if (m.start && regionAt(m, m.start).some((c) => cellKey(c.x, c.y) === k)) return null;
+  return { x: Math.round(pos.x), y: Math.round(pos.y) };
+}
+
+/* The fog a session opens with. Fog on, the start room explored and the party
+   standing in it. With no start chosen, or one the map no longer has, the map
+   opens dark exactly as it always did. */
+export function startPlay(map) {
+  const m = readMap(map);
+  if (!m.start || !m.floor[cellKey(m.start.x, m.start.y)]) {
+    return { fog: true, explored: {}, viewpoint: null };
+  }
+  const explored = {};
+  for (const c of regionAt(m, m.start)) explored[cellKey(c.x, c.y)] = true;
+  return { fog: true, explored, viewpoint: { x: m.start.x, y: m.start.y } };
+}
+
+/* What a click on a door does in play: the patch to write, or null when there
+   is no door there. `to` names a state to set directly (the right-click menu);
+   without it the door steps on, closed -> open -> jammed -> closed, as it does
+   under the door tool.
+
+   OPENING A DOOR LIFTS THE FOG BEYOND IT. With fog on, the door and both rooms
+   it joins are explored. Shutting it or jamming it explores nothing, and
+   because what is drawn is only what can still be reached through open doors,
+   it takes the far side off the board again; opening it brings it straight back.
+
+   THE PARTY GOES THROUGH. Reaching is measured from where the party stands, so
+   when the door being opened leads into somewhere new, the party is taken to be
+   on that side from then on: a door shut behind them hides the way they came,
+   not the room they are in. A door that only re-opens somewhere already seen
+   leaves the party where they were. */
+export function playDoor(map, pos, to = null) {
+  const m = readMap(map);
+  if (!pos) return null;
+  const k = cellKey(pos.x, pos.y);
+  const door = m.doors[k];
+  if (!door) return null;
+  const state = to && DOOR_STATES.includes(to) ? to : nextDoorState(door.state);
+  if (state === door.state) return {};
+  const doors = { ...m.doors, [k]: { ...door, state } };
+  const patch = { doors };
+  if (state !== 'open' || !m.fog) return patch;
+
+  const opened = { ...m, doors };
+  const explored = { ...m.explored };
+  for (const c of regionAt(opened, pos)) explored[cellKey(c.x, c.y)] = true;
+  patch.explored = explored;
+
+  if (m.viewpoint) {
+    const reach = openReach(m, m.viewpoint);
+    const sides = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+      .map(([dx, dy]) => ({ x: pos.x + dx, y: pos.y + dy }))
+      .filter((c) => m.floor[cellKey(c.x, c.y)] && !m.doors[cellKey(c.x, c.y)]);
+    const near = sides.filter((c) => reach.has(cellKey(c.x, c.y)));
+    const far = sides.filter((c) => !reach.has(cellKey(c.x, c.y)));
+    if (near.length === 0 && sides.length) {
+      // Nowhere the party can see touches this door, so lighting it would show
+      // nothing: the party is taken to be on one side of it.
+      patch.viewpoint = sides[0];
+    } else if (near.length && far.length === 1 && !m.explored[cellKey(far[0].x, far[0].y)]) {
+      patch.viewpoint = far[0];
+    }
+  }
+  return patch;
+}
+
+/* ------------------------- what a play panel lists -------------------------
+   The Play tab lists the map's doors and its rooms so each can be clicked
+   without hunting for it on a 300-square map. A "room" here is what the fog
+   already treats as a place: floor that can be walked without passing a door.
+   A door belongs to the rooms on its two sides.
+
+   Nothing is stored. A room is derived from the floor and the doors every time
+   they change, the way the walls are, so it cannot disagree with them. */
+
+const ORTHO = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+/* The doors, left to right and top to bottom, each with the rooms it joins
+   (indexes into roomsOf's list). Pass that list in if it is already in hand:
+   walking a big map twice to draw one panel is the cost to avoid. */
+export function doorsOf(map, listed = null) {
+  const m = readMap(map);
+  const rooms = listed || roomsOf(m);
+  const roomAt = new Map();
+  rooms.forEach((r, i) => { for (const k of r.keys) roomAt.set(k, i); });
+  const out = [];
+  for (const [k, d] of Object.entries(m.doors)) {
+    const p = parseKey(k);
+    if (!p || !m.floor[k]) continue;
+    const joins = [];
+    for (const [dx, dy] of ORTHO) {
+      const i = roomAt.get(cellKey(p.x + dx, p.y + dy));
+      if (i !== undefined && !joins.includes(i)) joins.push(i);
+    }
+    out.push({ key: k, x: p.x, y: p.y, kind: d.kind, state: d.state, joins: joins.sort((a, b) => a - b) });
+  }
+  return out.sort((a, b) => a.y - b.y || a.x - b.x);
+}
+
+/* The rooms: connected floor, not walking through a door square. Each is
+   { keys, cells, x0, y0, x1, y1, rep } where rep is a square inside it nearest
+   its middle, which is the one to click on its behalf. Left to right and top to
+   bottom by their top-left corner, so "Room 1" is the same room until the map
+   changes. */
+export function roomsOf(map) {
+  const m = readMap(map);
+  const seen = new Set();
+  const out = [];
+  for (const k0 of Object.keys(m.floor)) {
+    if (seen.has(k0) || m.doors[k0]) continue;
+    const keys = [];
+    const queue = [k0];
+    seen.add(k0);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, sx = 0, sy = 0;
+    while (queue.length) {
+      const k = queue.pop();
+      const p = parseKey(k);
+      keys.push(k);
+      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+      y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+      sx += p.x; sy += p.y;
+      for (const [dx, dy] of ORTHO) {
+        const nk = cellKey(p.x + dx, p.y + dy);
+        if (seen.has(nk) || !m.floor[nk] || m.doors[nk]) continue;
+        seen.add(nk);
+        queue.push(nk);
+      }
+    }
+    const cx = sx / keys.length, cy = sy / keys.length;
+    // Nearest the middle; a tie goes to the upper left, so the square that
+    // stands for a room is the same one every time rather than whichever the
+    // walk happened to reach first.
+    let best = null, bestD = Infinity;
+    for (const k of keys) {
+      const p = parseKey(k);
+      const d = (p.x - cx) ** 2 + (p.y - cy) ** 2;
+      if (d < bestD || (d === bestD && (p.y < best.y || (p.y === best.y && p.x < best.x)))) { bestD = d; best = p; }
+    }
+    out.push({ keys, cells: keys.length, x0, y0, x1, y1, rep: best });
+  }
+  return out.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+}
+
+/* A room's fog, as the panel shows it: 'lit' when everything in it has been
+   found, 'part' when some has, 'dark' when none. */
+export function roomFog(room, explored) {
+  let n = 0;
+  for (const k of room.keys) if (explored[k]) n++;
+  return n === 0 ? 'dark' : n === room.keys.length ? 'lit' : 'part';
+}
+
 /* ------------------------- the saved map library -------------------------
    A GM builds decks between sessions and plays them later, so a map is a
    thing you keep, not a thing you have. The library is the DM's own.
@@ -1222,12 +1407,13 @@ export function expandMap(map, cols, rows, { mirror = true } = {}) {
   for (const [k, v] of Object.entries(src.contacts)) if (inside(k)) contacts[k] = v;
   const viewpoint = src.viewpoint && inside(cellKey(src.viewpoint.x, src.viewpoint.y))
     ? src.viewpoint : null;
+  const start = src.start && inside(cellKey(src.start.x, src.start.y)) ? src.start : null;
 
   return {
     ...src,
     cols: w, rows: h,
     floor, cover, hazards, doors, markers, ground, obscuring,
-    explored, contacts, viewpoint
+    explored, contacts, viewpoint, start
   };
 }
 
@@ -1312,6 +1498,7 @@ function turnContent(m, t) {
     return out;
   };
   const vp = m.viewpoint ? at(m.viewpoint.x, m.viewpoint.y) : null;
+  const st = m.start ? at(m.start.x, m.start.y) : null;
   return {
     ...m,
     floor: move(m.floor),
@@ -1331,7 +1518,8 @@ function turnContent(m, t) {
     doors: move(m.doors, (d) => ({ ...d })),
     markers: move(m.markers, (v) => ({ ...v })),
     contacts: move(m.contacts, (c) => ({ ...c })),
-    viewpoint: vp && inGrid(vp) ? vp : null
+    viewpoint: vp && inGrid(vp) ? vp : null,
+    start: st && inGrid(st) ? st : null
   };
 }
 

@@ -45,6 +45,24 @@ Protection): the endpoint has no sign-in of its own, so on a public URL anyone
 could spend your key. Leave the variable unset and the rest of the app works
 unchanged.
 
+## Build and play
+
+The toolbar has two tabs. **Build** draws the map: tiles, floor, doors, cover,
+hazards, foliage and the **starting room** (the flag tool). **Play** runs it:
+turn the fog on and the map opens on the starting room, everything else dark.
+Click a door, on the map or in the Doors list, to open it, jam it or shut it;
+opening one lights what it joins and the party goes through, so shutting a door
+behind them takes the way they came off the board. The Rooms list reveals or
+hides a room, sets the start, and finds it on the map.
+
+**Right-click** any square for what it can be given without picking a tool:
+a door of any kind, fire, poison or acid, a cloud of fog or foliage (1×1 to
+7×7), a marker, or the monster named in the Contacts bar. The same menu sets
+the door under the pointer to open, closed or jammed, and starts the overlay
+(cast or fire from here, aim at here, with the range band read out), so it all
+works with the toolbars hidden for the projector. A click with the Fog, Hazard
+or Marker tool lifts whatever is on the square.
+
 ## What the overlay knows
 
 | Picks | Draws |

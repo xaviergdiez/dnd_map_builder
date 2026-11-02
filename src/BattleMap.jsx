@@ -13,7 +13,8 @@ import {
   HAZARD_TYPES, hazardById,
   nextContactState, senseSweep, SENSE_RANGE_FT,
   OBSCURING, obscuringById, LIGHTING_PRESETS, lightingById, blockedText, lineBlocked, LOS_MAX_SQUARES, keepClean,
-  areaFor, calibrationBar, deploymentRows
+  areaFor, calibrationBar, deploymentRows,
+  setStartRoom, startPlay, playDoor, regionAt, roomsOf, doorsOf, roomFog
 } from './battlemap.js';
 import { NOISE, noiseById, noisePing } from './awareness.js';
 import { overlayOf, overlayKindFor, FEET_PER_SQUARE, CONE_HALF_ANGLE_DEG, coverDegree, footprintSquares } from './rules.js';
@@ -54,11 +55,21 @@ const MODES = [
   { id: 'obscure', label: 'Foliage / fog', icon: 'foliage' },
   { id: 'contact', label: 'Contacts', icon: 'contact' },
   { id: 'noise', label: 'Noise', icon: 'noise' },
-  { id: 'fog', label: 'Fog', icon: 'fog' },
+  { id: 'start', label: 'Starting room', icon: 'flag' },
+  { id: 'fog', label: 'Fog and doors in play', icon: 'fog' },
   { id: 'marker', label: 'Marker', icon: 'marker' },
   { id: 'overlay', label: 'Overlay', icon: 'overlay' },
   { id: 'measure', label: 'Measure', icon: 'measure' }
 ];
+
+/* THE TWO TABS. A map is built and then it is played, and the tools for the two
+   have little in common: stamping tiles has no place at a table with the fog on,
+   and revealing a room has none while the map is being drawn. Build holds the
+   tools that make the map; Play holds the ones that run it, with the fog and
+   the doors in one place, clickable. Measure is wanted in both. */
+const BUILD_TOOLS = ['stamp', 'paint', 'ground', 'erase', 'door', 'cover', 'hazard', 'obscure', 'start', 'marker', 'measure'];
+const PLAY_TOOLS = ['fog', 'contact', 'noise', 'overlay', 'measure'];
+const toolsOf = (tab) => MODES.filter((x) => (tab === 'play' ? PLAY_TOOLS : BUILD_TOOLS).includes(x.id));
 
 // The weapons, melee first and then ranged, each by name: the picker for the
 // bar and the right-click menu. The spells are too many for a list and are
@@ -85,6 +96,7 @@ const ICONS = {
   noise: <><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11" /></>,
   fog: <><path d="M3 8h12M6 12h15M3 16h10M9 20h12" /></>,
   marker: <><path d="M12 21s-7-6-7-11a7 7 0 0114 0c0 5-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></>,
+  flag: <><path d="M6 21V4" /><path d="M6 4h11l-2.5 4L17 12H6" /></>,
   overlay: <><circle cx="12" cy="12" r="6" /><path d="M12 2v5M12 17v5M2 12h5M17 12h5" /></>,
   measure: <><path d="M3 17L17 3l4 4L7 21z" /><path d="M7 13l2 2M10 10l2 2M13 7l2 2" /></>,
   undo: <><path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 010 12h-3" /></>,
@@ -514,11 +526,25 @@ export default function BattleMap({
   const m = useMemo(() => readMap(map), [map]);
   const theme = resolveTheme(m.theme, customThemes);
 
-  const [mode, setMode] = useState('stamp');
+  // A map with the fog on is one being played, so it opens on the Play tab with
+  // the tool that runs a crawl in hand; a map being drawn opens on Build.
+  const [tab, setTab] = useState(m.fog ? 'play' : 'build');
+  const [mode, setMode] = useState(m.fog ? 'fog' : 'stamp');
+  const tabRef = useRef(tab);
+  const modeRef = useRef(mode);
+  tabRef.current = tab;
+  modeRef.current = mode;
+  // The tool last used on each tab, so going back to one finds it as it was.
+  const lastToolRef = useRef({ build: 'stamp', play: 'fog' });
+  const [found, setFound] = useState(null);
   const [tileId, setTileId] = useState('corridor_1x5');
   const [rotation, setRotation] = useState(0);
   const [markerType, setMarkerType] = useState('objective');
   const [brush, setBrush] = useState(1);
+  // How big a cloud the right-click menu lays: smoke is an area, and one square
+  // of it is no smoke at all. Apart from the brush so changing one is not
+  // changing the other.
+  const [cloud, setCloud] = useState(3);
   /* A VIEW control, deliberately not stored on the map. px/square is the
      projector's calibration and must not move; zoom scales what is already
      drawn so the GM can read a corner or take in the whole deck. On the
@@ -1052,6 +1078,43 @@ export default function BattleMap({
     return { x, y };
   };
 
+  /* A door clicked in play. `to` sets a state directly (the menu, the Play
+     tab); without it the door steps on. Opening one is a noise, the same as
+     under the door tool: anything hidden within earshot comes up on the scope
+     as a ping. */
+  const clickDoor = (pos, to = null) => {
+    const p = playDoor(m, pos, to);
+    if (!p || !p.doors) return;
+    const opened = p.doors[cellKey(pos.x, pos.y)].state === 'open';
+    patch(opened ? { ...p, contacts: noisePing(m, pos, 'door') } : p);
+  };
+
+  // The effect that opens the right-click menu is bound once, so it reads the
+  // current square-finder through a ref rather than the one it was bound with.
+  const cellAtRef = useRef(null);
+  cellAtRef.current = posFromEvent;
+
+  /* What a click takes off a square, as a patch, or null when it holds none of
+     the environment the menu lays. The marker first, then a hazard, then
+     smoke; a square with several is cleared one click at a time, top down. A
+     cloud goes the way it came: the size it was laid at, around the clicked
+     square, and only the smoke of that density. */
+  const liftEnvironmentAt = (pos) => {
+    const k = cellKey(pos.x, pos.y);
+    if (m.markers[k]) { const markers = { ...m.markers }; delete markers[k]; return { markers }; }
+    if (m.hazards[k]) { const hazards = { ...m.hazards }; delete hazards[k]; return { hazards }; }
+    const density = m.obscuring[k];
+    if (density) {
+      const obscuring = { ...m.obscuring };
+      for (const c of brushCells(pos, cloud, m)) {
+        const ck = cellKey(c.x, c.y);
+        if (obscuring[ck] === density) delete obscuring[ck];
+      }
+      return { obscuring };
+    }
+    return null;
+  };
+
   const applyAt = (pos, dragging = false, sweep = false, lineOfSight = false, conceal = false) => {
     if (!pos) return;
     const k = cellKey(pos.x, pos.y);
@@ -1125,7 +1188,17 @@ export default function BattleMap({
       patch({ floor: paintCells(m.floor, stampCells(tileId, pos, rotation, m), true) });
       return;
     }
+    // The room the party arrives in. Click inside it; click inside it again
+    // to take the choice back.
+    if (mode === 'start') {
+      patch({ start: setStartRoom(m, pos) });
+      return;
+    }
     if (mode === 'door') {
+      // With the fog on this is a game, not a drawing: a click on a door of
+      // the kind in hand is what it is under the fog tool, a door that opens
+      // and lights what is beyond.
+      if (m.fog && m.doors[k] && m.doors[k].kind === doorKind) { clickDoor(pos); return; }
       const doors = { ...m.doors };
       const here = doors[k];
       // Clicking a door of the same kind cycles its state; clicking with a
@@ -1155,7 +1228,10 @@ export default function BattleMap({
     }
     if (mode === 'hazard') {
       const hazards = { ...m.hazards };
-      if (hazards[k] === hazardType) delete hazards[k]; else hazards[k] = hazardType;
+      // Whatever is burning there goes out with a click, not only the kind in
+      // hand: a fire set from the right-click menu should not need the Fire
+      // chip chosen to be put out.
+      if (hazards[k]) delete hazards[k]; else hazards[k] = hazardType;
       patch({ hazards });
       return;
     }
@@ -1200,9 +1276,16 @@ export default function BattleMap({
         patch({ explored: concealArea(m, pos) });
         return;
       }
+      // A door is clicked as a door: it steps to its next state, and opening
+      // it lights what it joins.
+      if (m.doors[k]) { clickDoor(pos); return; }
+      // A square holding a marker, a hazard or a cloud of smoke is clicked OUT:
+      // those are laid mid-session from the menu and are lifted the same way,
+      // without going back to the menu. Click the room beside it to reveal.
+      const lifted = liftEnvironmentAt(pos);
+      if (lifted) { patch(lifted); return; }
       // A PLACE at a time, which is the reveal the table expects: click
-      // inside a room and the room is there; click a door or a hatch and
-      // what it joins comes in with it.
+      // inside a room and the room is there.
       //
       // The clicked square also becomes the viewpoint — where the party is
       // standing — because that is what it means in practice: the GM
@@ -1213,9 +1296,10 @@ export default function BattleMap({
     }
     if (mode === 'marker') {
       const markers = { ...m.markers };
-      // Clicking a marker of the same type again lifts it, so one tool both
-      // places and removes.
-      if (markers[k] && markers[k].type === markerType) delete markers[k];
+      // Clicking a marker lifts it, whatever kind it is, so one tool both
+      // places and removes. A marker set from the right-click menu goes with a
+      // click, without choosing its kind first.
+      if (markers[k]) delete markers[k];
       else markers[k] = { type: markerType, label: markerTypeById(markerType).name };
       patch({ markers });
       return;
@@ -1451,6 +1535,75 @@ export default function BattleMap({
     () => (m.fog ? visibleExplored(m) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [m.fog, m.explored, m.doors, m.floor, m.viewpoint]);
+
+  // The room the starting-room tool would choose, drawn tinted while it is in
+  // hand. Worked out only then: it walks the room.
+  const startCells = useMemo(
+    () => (mode === 'start' && m.start ? regionAt(m, m.start) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, m.start, m.floor, m.doors]);
+
+  /* ---- the tabs ----
+     Going to a tab puts in hand the tool last used there, or the tab's first.
+     Remembering the tool on the way out is what makes Build -> Play -> Build
+     land back on the tile that was about to be stamped. */
+  const chooseTab = (t) => {
+    const from = tabRef.current;
+    lastToolRef.current[from] = modeRef.current;
+    const ids = t === 'play' ? PLAY_TOOLS : BUILD_TOOLS;
+    const want = lastToolRef.current[t];
+    const next = ids.includes(want) ? want : ids[0];
+    if (t === from && modeRef.current === next) return;
+    tabRef.current = t;
+    modeRef.current = next;
+    setTab(t);
+    setMode(next);
+    // Ground, Deck and Grid are panels for drawing a map; they do not follow
+    // the DM to a table with the fog on.
+    if (t === 'play') { setGenOpen(false); setDeckOpen(false); setGridOpen(false); }
+  };
+  // Picking a tool by any road (the toolbar, the menu) is remembered for its tab.
+  useEffect(() => { lastToolRef.current[tabRef.current] = mode; }, [mode]);
+  // A different map is on screen: the tab that suits it. One with the fog on
+  // is being played; one out of the library is built.
+  useEffect(() => { chooseTab(m.fog ? 'play' : 'build'); }, [historyKey]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // The fog going on over the map already here is the same thing: it is being
+  // played now, and the first click on a door must not lay floor over it.
+  useEffect(() => { if (m.fog) chooseTab('play'); }, [m.fog]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* What the Play tab lists. Worked out only while that tab is showing: on a
+     500-square map it walks every square. */
+  const playing = tab === 'play' && showOptions;
+  const roomList = useMemo(
+    () => (playing ? roomsOf(m) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [playing, m.floor, m.doors]);
+  const doorList = useMemo(
+    () => (playing ? doorsOf(m, roomList) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [playing, roomList, m.doors]);
+  const startRoom = useMemo(() => {
+    if (!m.start) return -1;
+    const k = cellKey(m.start.x, m.start.y);
+    return roomList.findIndex((r) => r.keys.includes(k));
+  }, [roomList, m.start]);
+
+  // Brings a square to the middle of the screen and rings it for a moment.
+  const findCell = (c) => {
+    const el = stageRef.current;
+    if (el) {
+      const cx = (c.x * px + px / 2) * zoom, cy = (c.y * px + px / 2) * zoom;
+      el.scrollTo({ left: Math.max(0, cx - el.clientWidth / 2), top: Math.max(0, cy - el.clientHeight / 2), behavior: 'smooth' });
+    }
+    setFound({ x: c.x, y: c.y });
+    (win || window).setTimeout(() => setFound(null), 1800);
+  };
+  // A room's fog by hand, from the list: reveal it and put the party in it, or
+  // take it back.
+  const toggleRoom = (r, fog) => {
+    if (fog === 'lit') patch({ explored: concealArea(m, r.rep) });
+    else patch({ explored: revealArea(m, r.rep), viewpoint: { x: r.rep.x, y: r.rep.y } });
+  };
 
   /* Dead ground for the sight overlay, asked of a square the first time it is
      drawn and remembered. Working out every square a weapon might see used to
@@ -1813,6 +1966,38 @@ export default function BattleMap({
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
       });
 
+      // A square the DM asked to be shown: ringed for a moment, on their own
+      // screen only.
+      if (found && !projecting) {
+        ctx.save();
+        ctx.strokeStyle = '#4dd6ff'; ctx.lineWidth = Math.max(2, px * 0.09);
+        ctx.beginPath(); ctx.arc(found.x * px + px / 2, found.y * px + px / 2, px * 0.62, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+
+      // 6a. Where the party starts: the DM's own note on the map, never on the
+      //     projector. While the starting-room tool is in hand the whole room
+      //     is tinted, so it is clear what a click would choose.
+      if (m.start && !projecting) {
+        if (mode === 'start') {
+          ctx.fillStyle = 'rgba(243,201,110,0.16)';
+          for (const c of startCells) ctx.fillRect(c.x * px, c.y * px, px, px);
+        }
+        const fx = m.start.x * px + px / 2, fy = m.start.y * px + px / 2;
+        ctx.save();
+        ctx.strokeStyle = '#f3c96e'; ctx.fillStyle = '#f3c96e';
+        ctx.lineWidth = Math.max(1.5, px * 0.07);
+        ctx.beginPath(); ctx.arc(fx, fy, px * 0.4, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.85; ctx.stroke();
+        ctx.globalAlpha = 1;
+        const pole = fx - px * 0.1;
+        ctx.beginPath(); ctx.moveTo(pole, fy + px * 0.22); ctx.lineTo(pole, fy - px * 0.24); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(pole, fy - px * 0.24); ctx.lineTo(pole + px * 0.26, fy - px * 0.14); ctx.lineTo(pole, fy - px * 0.03);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+
       // 6b. Fog of war, over the deck and the grid both: an unexplored square
       //     must not even show how big it is.
       //
@@ -2050,7 +2235,7 @@ export default function BattleMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m, px, theme, hover, mode, tileId, rotation, brush, overlay, origin, aim, ov, projecting,
       measureFrom, measureTo, measurement, showZones, showCalibration, seeable, shown, textureTick,
-      tokenTick, noiseKind, zoom, showOptions]);
+      tokenTick, noiseKind, zoom, showOptions, found, startCells]);
 
   // Scrolling and resizing the stage move the window over the deck.
   useEffect(() => {
@@ -2222,8 +2407,9 @@ export default function BattleMap({
       e.preventDefault();
       if (rightZoomedRef.current) { rightZoomedRef.current = false; pending = null; return; }
       if (e.ctrlKey) return;
-      if ((e.buttons & 2) === 2) { pending = { x: e.clientX, y: e.clientY }; return; }
-      setMenu({ x: e.clientX, y: e.clientY });
+      const cell = cellAtRef.current ? cellAtRef.current(e) : null;
+      if ((e.buttons & 2) === 2) { pending = { x: e.clientX, y: e.clientY, cell }; return; }
+      setMenu({ x: e.clientX, y: e.clientY, cell });
     };
     const onMouseUp = (e) => {
       if (e.button !== 2) return;
@@ -2634,6 +2820,17 @@ export default function BattleMap({
   };
   const menuActions = () => {
     const a = [];
+    // The door that was right-clicked, set to any of its states directly: the
+    // click cycles, and a DM who wants it jammed should not have to step
+    // through the others to get there.
+    const dc = menu && menu.cell;
+    const dr = dc ? m.doors[cellKey(dc.x, dc.y)] : null;
+    if (dr) {
+      const noun = dr.kind === 'trapdoor' ? 'Trapdoor' : 'Door';
+      a.push({ key: 'd-open', label: `${noun}: open it`, checked: dr.state === 'open', run: () => clickDoor(dc, 'open') });
+      a.push({ key: 'd-closed', label: `${noun}: close it`, checked: dr.state === 'closed', run: () => clickDoor(dc, 'closed') });
+      a.push({ key: 'd-jammed', label: `${noun}: jam it`, checked: dr.state === 'jammed', run: () => clickDoor(dc, 'jammed') });
+    }
     if (mode === 'stamp') a.push({ key: 'rot', label: `Rotate the tile (now ${rotation}\u00b0)`, hint: 'R', run: () => setRotation((r) => (r + 90) % 360) });
     if (mode === 'ground') {
       a.push({
@@ -2642,6 +2839,7 @@ export default function BattleMap({
       });
     }
     if (mode === 'fog') {
+      if (m.start) a.push({ key: 'restart', label: 'Back to the starting room', run: () => patch(startPlay(m)) });
       a.push({ key: 'reveal', label: 'Reveal everything', run: () => patch({ explored: allExplored() }) });
       a.push({ key: 'hide', label: 'Hide everything', run: () => patch({ explored: {} }) });
     }
@@ -2652,6 +2850,146 @@ export default function BattleMap({
     }
     return a;
   };
+  /* ---- what the right-clicked square can be given ----
+     The tools lay hazards, smoke and markers by clicking, and that means
+     picking the tool first, which is a trip to the toolbar the projector view
+     does not have. So the square under the pointer can be given these
+     directly, on either tab and with whatever tool is in hand: set fire to it,
+     fill it with smoke, mark it, drop a contact on it. Choosing what is
+     already there takes it off again, the way the tools do. */
+  const hereCell = menu && menu.cell ? menu.cell : null;
+  const hereKey = hereCell ? cellKey(hereCell.x, hereCell.y) : null;
+  const hereHas = hereCell
+    ? Boolean(m.hazards[hereKey] || m.obscuring[hereKey] || m.markers[hereKey] || m.contacts[hereKey])
+    : false;
+  const hereGroups = () => {
+    if (!hereCell) return [];
+    const out = [];
+    const add = (id, title, items) => out.push({
+      id, title, items, current: (items.find((i) => i.checked) || {}).label || ''
+    });
+    /* A door or trapdoor on this square, of any kind: the Door tool without
+       the tool. A square that already has one keeps its state when the kind
+       is changed, so a jammed door swapped for an iron one is still jammed. Its
+       open, closed and jammed are further up the menu, and "Remove the door"
+       is below. */
+    add('h-door', 'Door or trapdoor', DOOR_KINDS.map((d) => radio('dr-' + d.id, `${d.name} \u00b7 AC ${d.ac}`,
+      Boolean(m.doors[hereKey] && m.doors[hereKey].kind === d.id), () => {
+        const doors = { ...m.doors };
+        const here = doors[hereKey];
+        doors[hereKey] = { kind: d.id, state: here ? here.state : 'closed' };
+        patch({ doors });
+      })));
+    add('h-hazard', 'Fire, poison, acid\u2026', HAZARD_TYPES.map((h) => radio('hz-' + h.id, h.name, m.hazards[hereKey] === h.id, () => {
+      const hazards = { ...m.hazards };
+      if (hazards[hereKey] === h.id) delete hazards[hereKey]; else hazards[hereKey] = h.id;
+      patch({ hazards });
+    })));
+    add('h-smoke', 'Fog or foliage', OBSCURING.map((o) => radio('sm-' + o.id, `${o.name} \u00b7 ${cloud}\u00d7${cloud}`, m.obscuring[hereKey] === o.id, () => {
+      const obscuring = { ...m.obscuring };
+      const lifting = obscuring[hereKey] === o.id;
+      for (const c of brushCells(hereCell, cloud, m)) {
+        const ck = cellKey(c.x, c.y);
+        if (lifting) delete obscuring[ck]; else obscuring[ck] = o.id;
+      }
+      patch({ obscuring });
+    })));
+    add('h-cloud', 'Cloud size', [1, 3, 5, 7].map((n) => radio('cl' + n, `${n}\u00d7${n}`, cloud === n, () => setCloud(n))));
+    const mkHere = m.markers[hereKey] || null;
+    add('h-token', 'Marker', MARKER_TYPES.map((t) => radio('mk-' + t.id, t.name, Boolean(mkHere && mkHere.type === t.id), () => {
+      const markers = { ...m.markers };
+      if (markers[hereKey] && markers[hereKey].type === t.id) delete markers[hereKey];
+      else markers[hereKey] = { type: t.id, label: markerTypeById(t.id).name };
+      patch({ markers });
+    })));
+    return out;
+  };
+  /* The monster named in the Contacts bar, put on this square as a contact
+     the table has not found yet: the same thing the Contacts tool lays,
+     without picking it. Picking it again lifts it. */
+  const contactItem = () => {
+    const name = contactName.trim();
+    if (!hereCell || !name) return null;
+    const here = m.contacts[hereKey];
+    return {
+      key: 'h-contact', label: here ? `Lift the contact (${here.name})` : `Hide a ${name} here`,
+      run: () => {
+        const contacts = { ...m.contacts };
+        if (here) delete contacts[hereKey];
+        else {
+          const mon = monsterByName(name);
+          const size = mon ? footprintSquares(mon.size, m.feetPerSquare) : 1;
+          contacts[hereKey] = size > 1 ? { name, state: 'hidden', size } : { name, state: 'hidden' };
+        }
+        patch({ contacts });
+      }
+    };
+  };
+  const clearHere = () => {
+    const hazards = { ...m.hazards }; const obscuring = { ...m.obscuring };
+    const markers = { ...m.markers }; const contacts = { ...m.contacts };
+    delete hazards[hereKey]; delete obscuring[hereKey]; delete markers[hereKey]; delete contacts[hereKey];
+    patch({ hazards, obscuring, markers, contacts });
+  };
+  /* ---- the overlay, from the menu ----
+     The overlay is two clicks and a weapon or spell: where the caster stands,
+     what they point at. With the toolbars hidden (full screen, the projector)
+     there is nowhere to pick either and no way to set the squares except by
+     already holding the Overlay tool, so the menu does it from any tool, on
+     either tab. Choosing "Cast from here" brings the Overlay tool up with it,
+     on the Play tab where it lives, so the rings and the line are drawn. */
+  const openOverlay = () => {
+    if (tabRef.current !== 'play') chooseTab('play');
+    modeRef.current = 'overlay';
+    setMode('overlay');
+  };
+  const overlayItems = () => {
+    if (!hereCell) return [];
+    const a = [];
+    if (origin) {
+      const name = ov ? ov.name : '';
+      const shot = ov ? reachBetween({ from: origin, to: hereCell, map: m, ov }) : null;
+      a.push({
+        key: 'ov-info', disabled: true,
+        label: `From ${origin.x},${origin.y}${name ? ` with ${name}` : ''}`
+          + (shot ? ` \u00b7 here ${shot.feet} ft, ${shot.band} range${shot.effect ? ` (${shot.effect})` : ''}` : '')
+      });
+      a.push({ key: 'ov-aim', label: 'Aim at here', icon: 'overlay', run: () => { openOverlay(); setAim(hereCell); } });
+    }
+    a.push({
+      key: 'ov-from', label: origin ? 'Cast from here instead' : 'Cast or fire from here', icon: 'overlay',
+      run: () => { openOverlay(); originRef.current = hereCell; setOrigin(hereCell); setAim(null); }
+    });
+    if (origin && mode !== 'overlay') {
+      a.push({ key: 'ov-clear', label: 'Clear the overlay', run: () => { originRef.current = null; setOrigin(null); setAim(null); } });
+    }
+    return a;
+  };
+  // The weapon is a group in the Overlay and Measure tools' own menu already;
+  // from any other tool it is offered here, so it can be chosen before firing.
+  // Spells are searched by name in the bar, not listed.
+  const overlayGroups = () => {
+    if (!hereCell || mode === 'overlay' || mode === 'measure') return [];
+    return [{
+      id: 'h-weapon', title: 'Weapon',
+      current: ov ? ov.name : '',
+      items: [
+        radio('none', 'No weapon or spell', !pick, () => { setPick(''); setSpellText(''); }),
+        ...ARMED.map((a) => radio(a.key, `${a.label} \u00b7 ${a.kind}`, pick === a.key, () => { setPick(a.key); setSpellText(''); }))
+      ]
+    }];
+  };
+  const renderGroup = (g) => (
+    <div key={g.id} className="bm-menu-group">
+      <button type="button" className="bm-menu-item head" aria-expanded={menuOpen === g.id}
+        onClick={() => setMenuOpen(menuOpen === g.id ? null : g.id)}>
+        <span className="bm-menu-tick">{menuOpen === g.id ? '\u25BE' : '\u25B8'}</span>
+        <span>{g.title}</span>
+        <em>{g.current}</em>
+      </button>
+      {menuOpen === g.id && <div className="bm-menu-list">{g.items.map(menuItem)}</div>}
+    </div>
+  );
   const menuItem = (i) => (
     <button key={i.key} type="button" disabled={i.disabled}
       role={i.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={i.checked}
@@ -2673,6 +3011,11 @@ export default function BattleMap({
       x: Math.max(4, Math.min(menu.x, w.innerWidth - r.width - 4)),
       y: Math.max(4, Math.min(menu.y, w.innerHeight - r.height - 4))
     });
+    /* The menu is taller than a small or full-screen window can show, and it
+       scrolls. A group that has just been unfolded is brought into view, or its
+       list would open below the edge with nothing to say it was there. */
+    const list = el.querySelector('.bm-menu-list');
+    if (list && list.scrollIntoView) list.scrollIntoView({ block: 'nearest' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu, menuOpen]);
 
@@ -2713,7 +3056,20 @@ export default function BattleMap({
       )}
       {showOptions && (<>
       <div className="bm-bar bm-top">
-        <select value={m.theme}
+        {/* Build the map, or play it. What is in the rest of this bar, and in
+            the right-click menu, follows the tab. */}
+        <div className="bm-group bm-tabs" role="tablist" aria-label="Map tabs">
+          {[['build', 'Build'], ['play', 'Play']].map(([id, label]) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id}
+              className={'bm-btn bm-mode bm-tab' + (tab === id ? ' on' : '')}
+              title={id === 'play'
+                ? 'Run the map: click doors to open, close or jam them, click rooms to reveal them'
+                : 'Draw the map: tiles, floor, doors, cover, hazards and the starting room'}
+              onClick={() => chooseTab(id)}>{label}</button>
+          ))}
+        </div>
+
+        {tab === 'build' && <select value={m.theme}
           onChange={(e) => patch({ theme: e.target.value, customTexture: null })}>
           <optgroup label="Built in">
             {MAP_THEMES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -2723,28 +3079,32 @@ export default function BattleMap({
               {customThemes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </optgroup>
           )}
-        </select>
+        </select>}
 
         {/* Panels, folded away until wanted. */}
         <div className="bm-group" role="group" aria-label="Panels">
-          <button type="button"
-            className={'bm-btn bm-mode' + (genOpen ? ' on' : '')}
-            onClick={() => setGenOpen((v) => !v)}>
-            Ground{m.customTexture ? ' · generated' : ''}
-          </button>
-          <button type="button"
-            className={'bm-btn bm-mode' + (deckOpen ? ' on' : '')}
-            onClick={() => setDeckOpen((v) => !v)}>
-            Generate
-          </button>
+          {tab === 'build' && (
+            <button type="button"
+              className={'bm-btn bm-mode' + (genOpen ? ' on' : '')}
+              onClick={() => setGenOpen((v) => !v)}>
+              Ground{m.customTexture ? ' · generated' : ''}
+            </button>
+          )}
+          {tab === 'build' && (
+            <button type="button"
+              className={'bm-btn bm-mode' + (deckOpen ? ' on' : '')}
+              onClick={() => setDeckOpen((v) => !v)}>
+              Generate
+            </button>
+          )}
           <IconButton icon="save" label="Save and load maps" on={libOpen} onClick={() => setLibOpen((v) => !v)} />
-          <IconButton icon="grid" label="Grid, scale and light" on={gridOpen} onClick={() => setGridOpen((v) => !v)} />
+          {tab === 'build' && <IconButton icon="grid" label="Grid, scale and light" on={gridOpen} onClick={() => setGridOpen((v) => !v)} />}
         </div>
 
         {/* The tools: one icon each, the name in the tooltip, and the active
             one named in the row of options below. */}
         <div className="bm-group" role="group" aria-label="Tools">
-          {MODES.map((x) => (
+          {toolsOf(tab).map((x) => (
             <IconButton key={x.id} icon={x.icon} label={x.label} on={mode === x.id}
               onClick={() => setMode(x.id)} />
           ))}
@@ -2769,8 +3129,8 @@ export default function BattleMap({
             disabled={historyRef.current.past.length === 0} />
           <IconButton icon="redo" label="Redo (Shift+Cmd/Ctrl+Z)" onClick={redo}
             disabled={historyRef.current.future.length === 0} />
-          <IconButton icon="rotateLeft" label="Turn what is painted 90° anticlockwise (R+Shift+click)" onClick={() => rotateMapBy(-1)} />
-          <IconButton icon="rotateRight" label="Turn what is painted 90° clockwise (R+click)" onClick={() => rotateMapBy(1)} />
+          {tab === 'build' && <IconButton icon="rotateLeft" label="Turn what is painted 90° anticlockwise (R+Shift+click)" onClick={() => rotateMapBy(-1)} />}
+          {tab === 'build' && <IconButton icon="rotateRight" label="Turn what is painted 90° clockwise (R+click)" onClick={() => rotateMapBy(1)} />}
         </div>
 
         <div className="bm-group" role="group" aria-label="Map">
@@ -3426,25 +3786,47 @@ export default function BattleMap({
           </span>
         </>)}
 
+        {mode === 'start' && (<>
+          <span className="bm-hint">
+            {m.start
+              ? `The party starts in the room marked with the flag (${m.start.x}, ${m.start.y}). Click inside another room to move it, or inside this one to take the choice back.`
+              : 'Click inside the room the party arrives in. Turning the fog on lights that room, puts the party in it, and leaves everything else dark until a door is opened.'}
+          </span>
+          {m.start && (
+            <button type="button" className="bm-btn" onClick={() => patch({ start: null })}>Clear the start</button>
+          )}
+        </>)}
+
         {mode === 'fog' && (<>
           <label className="bm-num">
             <input type="checkbox" checked={m.fog}
-              onChange={(e) => patch({ fog: e.target.checked })} /><span>Fog of war</span>
+              onChange={(e) => patch(e.target.checked
+                // Turning fog on over a map with a starting room and nothing
+                // explored opens on that room.
+                ? (m.start && Object.keys(m.explored).length === 0 ? startPlay(m) : { fog: true })
+                : { fog: false })} /><span>Fog of war</span>
           </label>
+          {m.start && (
+            <button type="button" className="bm-btn"
+              title="Light the starting room again and put the party back in it. Doors stay as they are."
+              onClick={() => patch(startPlay(m))}>Back to the start</button>
+          )}
           <button type="button" className="bm-btn"
             onClick={() => patch({ explored: allExplored() })}>Reveal all</button>
           <button type="button" className="bm-btn"
             onClick={() => patch({ explored: {} })}>Hide all</button>
           {num('Sense ft', senseFt, setSenseFt, 5, 2500, 5)}
           <span className="bm-hint">
-            Click a room to reveal it, or a door to bring in what it joins — a door
-            bounds a place whether it is open or shut. The square you click is where
-            the party is standing, so shutting a door afterwards takes what is beyond
-            it off the board, and opening it again brings it straight back.
-            Ctrl-click takes a place back by hand, drag reveals square by square,
-            alt-click reveals line of sight from a square, and shift-click is an
-            sense sweep, the way Detect Magic does it — it reads through walls and
-            pings contacts without opening the map.
+            Click a DOOR to change it: closed, then open, then jammed, then closed
+            again (right-click a door to set it directly). Opening one lights what
+            it joins, and the party is taken through it, so shutting a door behind
+            them takes the way they came off the board and opening it again brings
+            it straight back. A jammed door blocks like a shut one. Click a room to
+            reveal it by hand. Ctrl-click takes a place back, drag reveals square by
+            square, alt-click reveals line of sight from a square, and shift-click
+            is a sense sweep, the way Detect Magic does it — it reads through walls
+            and pings contacts without opening the map.
+            {m.start ? '' : ' Pick a starting room with the flag tool and turning the fog on opens on it instead of in the dark.'}
           </span>
         </>)}
 
@@ -3484,6 +3866,77 @@ export default function BattleMap({
             onClick={() => { originRef.current = null; setOrigin(null); setAim(null); }}>Clear overlay</button>
         </>)}
       </div>
+
+      {/* THE PLAY TAB'S LISTS. The doors and the rooms of the map, each one a
+          click away without finding it on the map: a door sets to any of its
+          three states, a room is revealed or taken back, and the flag says
+          where the party starts. They do what clicking on the map does. */}
+      {tab === 'play' && (
+        <div className="bm-play">
+          <div className="bm-playcol">
+            <div className="bm-playh">Doors <span>{doorList.length}</span></div>
+            {doorList.length === 0 ? (
+              <p className="bm-hint">This map has no doors. Draw some on the Build tab.</p>
+            ) : (
+              <ul className="bm-doors">
+                {doorList.map((d) => {
+                  const onBoard = !shown || Boolean(shown[d.key]);
+                  return (
+                    <li key={d.key} className={'bm-door' + (onBoard ? '' : ' away')}>
+                      <button type="button" className="bm-find" onClick={() => findCell(d)}
+                        title={onBoard ? 'Find it on the map' : 'Not on the board yet. Find it on the map'}>
+                        {d.kind === 'trapdoor' ? 'Trapdoor' : 'Door'} {d.x},{d.y}
+                      </button>
+                      <span className="bm-joins">
+                        {d.joins.length ? d.joins.map((j) => j + 1).join(' \u2194 ') : ''}
+                      </span>
+                      {DOOR_STATES.map((st) => (
+                        <button key={st} type="button" aria-pressed={d.state === st}
+                          className={'bm-st ' + st + (d.state === st ? ' on' : '')}
+                          title={st === 'open' ? 'Open it, and light what it joins'
+                            : st === 'jammed' ? 'Jam it: it blocks like a shut door'
+                              : 'Shut it'}
+                          onClick={() => clickDoor({ x: d.x, y: d.y }, st)}>{st}</button>
+                      ))}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+          <div className="bm-playcol">
+            <div className="bm-playh">Rooms <span>{roomList.length}</span></div>
+            {roomList.length === 0 ? (
+              <p className="bm-hint">Nothing drawn yet.</p>
+            ) : (
+              <ul className="bm-rooms">
+                {roomList.map((r, i) => {
+                  const fog = m.fog ? roomFog(r, m.explored) : 'lit';
+                  const isStart = startRoom === i;
+                  return (
+                    <li key={i}>
+                      <button type="button" className={'bm-room ' + fog}
+                        title={fog === 'lit' ? 'Take this room off the board' : 'Reveal this room and put the party in it'}
+                        onClick={() => toggleRoom(r, fog)}>
+                        <span>Room {i + 1}</span>
+                        <em>{!m.fog ? 'fog is off' : fog === 'lit' ? 'revealed' : fog === 'part' ? 'part revealed' : 'dark'}</em>
+                      </button>
+                      <button type="button" className={'bm-ico-btn bm-flag' + (isStart ? ' on' : '')}
+                        aria-pressed={isStart} aria-label={isStart ? `Room ${i + 1} is the start` : `Make room ${i + 1} the start`}
+                        title={isStart ? 'The party starts here. Click to clear it' : 'The party starts here'}
+                        onClick={() => patch({ start: isStart ? null : { x: r.rep.x, y: r.rep.y } })}>
+                        <Icon name="flag" size={15} />
+                      </button>
+                      <button type="button" className="bm-find" onClick={() => findCell(r.rep)}
+                        title="Find it on the map">find</button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       {mode === 'overlay' && (
         <div className="bm-measure">
@@ -3597,9 +4050,19 @@ export default function BattleMap({
         <div className="bm-menu" ref={menuRef} role="menu" aria-label="Map menu"
           style={{ left: menuAt.x, top: menuAt.y }}
           onContextMenu={(e) => e.preventDefault()}>
+          <div className="bm-menu-h">Tab</div>
+          <div className="bm-menu-tools">
+            {[['build', 'Build', 'paint'], ['play', 'Play', 'fog']].map(([id, label, icon]) => (
+              <button key={id} type="button" role="menuitemradio" aria-checked={tab === id}
+                className={'bm-menu-tool' + (tab === id ? ' on' : '')}
+                onClick={doMenu(() => chooseTab(id))}>
+                <Icon name={icon} size={16} /><span>{label}</span>
+              </button>
+            ))}
+          </div>
           <div className="bm-menu-h">Tool</div>
           <div className="bm-menu-tools">
-            {MODES.map((x) => (
+            {toolsOf(tab).map((x) => (
               <button key={x.id} type="button" role="menuitemradio" aria-checked={mode === x.id}
                 className={'bm-menu-tool' + (mode === x.id ? ' on' : '')}
                 onClick={doMenu(() => setMode(x.id))}>
@@ -3609,17 +4072,24 @@ export default function BattleMap({
           </div>
           <div className="bm-menu-sep" />
           {menuActions().map(menuItem)}
-          {menuGroups().map((g) => (
-            <div key={g.id} className="bm-menu-group">
-              <button type="button" className="bm-menu-item head" aria-expanded={menuOpen === g.id}
-                onClick={() => setMenuOpen(menuOpen === g.id ? null : g.id)}>
-                <span className="bm-menu-tick">{menuOpen === g.id ? '\u25BE' : '\u25B8'}</span>
-                <span>{g.title}</span>
-                <em>{g.current}</em>
-              </button>
-              {menuOpen === g.id && <div className="bm-menu-list">{g.items.map(menuItem)}</div>}
-            </div>
-          ))}
+          {menuGroups().map(renderGroup)}
+          {hereCell && (
+            <>
+              <div className="bm-menu-sep" />
+              <div className="bm-menu-h">At this square</div>
+              {hereGroups().map(renderGroup)}
+              {contactItem() && menuItem(contactItem())}
+              {hereHas && menuItem({ key: 'clear-here', label: 'Clear this square', run: clearHere })}
+              {m.doors[hereKey] && menuItem({
+                key: 'remove-door', label: `Remove the ${m.doors[hereKey].kind === 'trapdoor' ? 'trapdoor' : 'door'}`,
+                run: () => { const doors = { ...m.doors }; delete doors[hereKey]; patch({ doors }); }
+              })}
+              <div className="bm-menu-sep" />
+              <div className="bm-menu-h">Overlay</div>
+              {overlayItems().map(menuItem)}
+              {overlayGroups().map(renderGroup)}
+            </>
+          )}
           {menuItem({ key: 'fog', label: 'Fog of war', checked: m.fog, run: () => patch({ fog: !m.fog }) })}
           <div className="bm-menu-sep" />
           <div className="bm-menu-icons">
