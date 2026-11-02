@@ -50,10 +50,9 @@ unchanged.
 The toolbar has two tabs. **Build** draws the map: tiles, floor, doors, cover,
 hazards, foliage and the **starting room** (the flag tool). **Play** runs it:
 turn the fog on and the map opens on the starting room, everything else dark.
-Click a door, on the map or in the Doors list, to open it, jam it or shut it;
-opening one lights what it joins and the party goes through, so shutting a door
-behind them takes the way they came off the board. The Rooms list reveals or
-hides a room, sets the start, and finds it on the map.
+Click a door on the map to open it, jam it or shut it; opening one lights the
+room beyond, and shutting it hides that room again, not the way back, as if the
+party had fallen back and pulled it to.
 
 **Right-click** any square for what it can be given without picking a tool:
 a door of any kind, fire, poison or acid, a cloud of fog or foliage (1×1 to

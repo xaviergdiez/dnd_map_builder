@@ -1128,11 +1128,11 @@ export function startPlay(map) {
    because what is drawn is only what can still be reached through open doors,
    it takes the far side off the board again; opening it brings it straight back.
 
-   THE PARTY GOES THROUGH. Reaching is measured from where the party stands, so
-   when the door being opened leads into somewhere new, the party is taken to be
-   on that side from then on: a door shut behind them hides the way they came,
-   not the room they are in. A door that only re-opens somewhere already seen
-   leaves the party where they were. */
+    THE PARTY STAYS WHERE IT IS. Opening a door lights what is beyond it but does
+   not move the party through: reaching is measured from where they stand, so
+   shutting the door hides the room it just revealed, and anything past it, and
+   never the way back. That is the usual shape of a crawl, with the party
+   falling back and pulling the door to behind them. */
 export function playDoor(map, pos, to = null) {
   const m = readMap(map);
   if (!pos) return null;
@@ -1156,101 +1156,11 @@ export function playDoor(map, pos, to = null) {
       .map(([dx, dy]) => ({ x: pos.x + dx, y: pos.y + dy }))
       .filter((c) => m.floor[cellKey(c.x, c.y)] && !m.doors[cellKey(c.x, c.y)]);
     const near = sides.filter((c) => reach.has(cellKey(c.x, c.y)));
-    const far = sides.filter((c) => !reach.has(cellKey(c.x, c.y)));
-    if (near.length === 0 && sides.length) {
-      // Nowhere the party can see touches this door, so lighting it would show
-      // nothing: the party is taken to be on one side of it.
-      patch.viewpoint = sides[0];
-    } else if (near.length && far.length === 1 && !m.explored[cellKey(far[0].x, far[0].y)]) {
-      patch.viewpoint = far[0];
-    }
+    // Nowhere the party can see touches this door, so lighting it would show
+    // nothing: the party is taken to be on one side of it.
+    if (near.length === 0 && sides.length) patch.viewpoint = sides[0];
   }
   return patch;
-}
-
-/* ------------------------- what a play panel lists -------------------------
-   The Play tab lists the map's doors and its rooms so each can be clicked
-   without hunting for it on a 300-square map. A "room" here is what the fog
-   already treats as a place: floor that can be walked without passing a door.
-   A door belongs to the rooms on its two sides.
-
-   Nothing is stored. A room is derived from the floor and the doors every time
-   they change, the way the walls are, so it cannot disagree with them. */
-
-const ORTHO = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-
-/* The doors, left to right and top to bottom, each with the rooms it joins
-   (indexes into roomsOf's list). Pass that list in if it is already in hand:
-   walking a big map twice to draw one panel is the cost to avoid. */
-export function doorsOf(map, listed = null) {
-  const m = readMap(map);
-  const rooms = listed || roomsOf(m);
-  const roomAt = new Map();
-  rooms.forEach((r, i) => { for (const k of r.keys) roomAt.set(k, i); });
-  const out = [];
-  for (const [k, d] of Object.entries(m.doors)) {
-    const p = parseKey(k);
-    if (!p || !m.floor[k]) continue;
-    const joins = [];
-    for (const [dx, dy] of ORTHO) {
-      const i = roomAt.get(cellKey(p.x + dx, p.y + dy));
-      if (i !== undefined && !joins.includes(i)) joins.push(i);
-    }
-    out.push({ key: k, x: p.x, y: p.y, kind: d.kind, state: d.state, joins: joins.sort((a, b) => a - b) });
-  }
-  return out.sort((a, b) => a.y - b.y || a.x - b.x);
-}
-
-/* The rooms: connected floor, not walking through a door square. Each is
-   { keys, cells, x0, y0, x1, y1, rep } where rep is a square inside it nearest
-   its middle, which is the one to click on its behalf. Left to right and top to
-   bottom by their top-left corner, so "Room 1" is the same room until the map
-   changes. */
-export function roomsOf(map) {
-  const m = readMap(map);
-  const seen = new Set();
-  const out = [];
-  for (const k0 of Object.keys(m.floor)) {
-    if (seen.has(k0) || m.doors[k0]) continue;
-    const keys = [];
-    const queue = [k0];
-    seen.add(k0);
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, sx = 0, sy = 0;
-    while (queue.length) {
-      const k = queue.pop();
-      const p = parseKey(k);
-      keys.push(k);
-      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
-      y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
-      sx += p.x; sy += p.y;
-      for (const [dx, dy] of ORTHO) {
-        const nk = cellKey(p.x + dx, p.y + dy);
-        if (seen.has(nk) || !m.floor[nk] || m.doors[nk]) continue;
-        seen.add(nk);
-        queue.push(nk);
-      }
-    }
-    const cx = sx / keys.length, cy = sy / keys.length;
-    // Nearest the middle; a tie goes to the upper left, so the square that
-    // stands for a room is the same one every time rather than whichever the
-    // walk happened to reach first.
-    let best = null, bestD = Infinity;
-    for (const k of keys) {
-      const p = parseKey(k);
-      const d = (p.x - cx) ** 2 + (p.y - cy) ** 2;
-      if (d < bestD || (d === bestD && (p.y < best.y || (p.y === best.y && p.x < best.x)))) { bestD = d; best = p; }
-    }
-    out.push({ keys, cells: keys.length, x0, y0, x1, y1, rep: best });
-  }
-  return out.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-}
-
-/* A room's fog, as the panel shows it: 'lit' when everything in it has been
-   found, 'part' when some has, 'dark' when none. */
-export function roomFog(room, explored) {
-  let n = 0;
-  for (const k of room.keys) if (explored[k]) n++;
-  return n === 0 ? 'dark' : n === room.keys.length ? 'lit' : 'part';
 }
 
 /* ------------------------- the saved map library -------------------------

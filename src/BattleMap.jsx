@@ -14,7 +14,7 @@ import {
   nextContactState, senseSweep, SENSE_RANGE_FT,
   OBSCURING, obscuringById, LIGHTING_PRESETS, lightingById, blockedText, lineBlocked, LOS_MAX_SQUARES, keepClean,
   areaFor, calibrationBar, deploymentRows,
-  setStartRoom, startPlay, playDoor, regionAt, roomsOf, doorsOf, roomFog
+  setStartRoom, startPlay, playDoor, regionAt
 } from './battlemap.js';
 import { NOISE, noiseById, noisePing } from './awareness.js';
 import { overlayOf, overlayKindFor, FEET_PER_SQUARE, CONE_HALF_ANGLE_DEG, coverDegree, footprintSquares } from './rules.js';
@@ -536,7 +536,6 @@ export default function BattleMap({
   modeRef.current = mode;
   // The tool last used on each tab, so going back to one finds it as it was.
   const lastToolRef = useRef({ build: 'stamp', play: 'fog' });
-  const [found, setFound] = useState(null);
   const [tileId, setTileId] = useState('corridor_1x5');
   const [rotation, setRotation] = useState(0);
   const [markerType, setMarkerType] = useState('objective');
@@ -1571,40 +1570,6 @@ export default function BattleMap({
   // played now, and the first click on a door must not lay floor over it.
   useEffect(() => { if (m.fog) chooseTab('play'); }, [m.fog]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* What the Play tab lists. Worked out only while that tab is showing: on a
-     500-square map it walks every square. */
-  const playing = tab === 'play' && showOptions;
-  const roomList = useMemo(
-    () => (playing ? roomsOf(m) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [playing, m.floor, m.doors]);
-  const doorList = useMemo(
-    () => (playing ? doorsOf(m, roomList) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [playing, roomList, m.doors]);
-  const startRoom = useMemo(() => {
-    if (!m.start) return -1;
-    const k = cellKey(m.start.x, m.start.y);
-    return roomList.findIndex((r) => r.keys.includes(k));
-  }, [roomList, m.start]);
-
-  // Brings a square to the middle of the screen and rings it for a moment.
-  const findCell = (c) => {
-    const el = stageRef.current;
-    if (el) {
-      const cx = (c.x * px + px / 2) * zoom, cy = (c.y * px + px / 2) * zoom;
-      el.scrollTo({ left: Math.max(0, cx - el.clientWidth / 2), top: Math.max(0, cy - el.clientHeight / 2), behavior: 'smooth' });
-    }
-    setFound({ x: c.x, y: c.y });
-    (win || window).setTimeout(() => setFound(null), 1800);
-  };
-  // A room's fog by hand, from the list: reveal it and put the party in it, or
-  // take it back.
-  const toggleRoom = (r, fog) => {
-    if (fog === 'lit') patch({ explored: concealArea(m, r.rep) });
-    else patch({ explored: revealArea(m, r.rep), viewpoint: { x: r.rep.x, y: r.rep.y } });
-  };
-
   /* Dead ground for the sight overlay, asked of a square the first time it is
      drawn and remembered. Working out every square a weapon might see used to
      be done up front, on every move of the pointer. */
@@ -1966,15 +1931,6 @@ export default function BattleMap({
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
       });
 
-      // A square the DM asked to be shown: ringed for a moment, on their own
-      // screen only.
-      if (found && !projecting) {
-        ctx.save();
-        ctx.strokeStyle = '#4dd6ff'; ctx.lineWidth = Math.max(2, px * 0.09);
-        ctx.beginPath(); ctx.arc(found.x * px + px / 2, found.y * px + px / 2, px * 0.62, 0, Math.PI * 2); ctx.stroke();
-        ctx.restore();
-      }
-
       // 6a. Where the party starts: the DM's own note on the map, never on the
       //     projector. While the starting-room tool is in hand the whole room
       //     is tinted, so it is clear what a click would choose.
@@ -2235,7 +2191,7 @@ export default function BattleMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m, px, theme, hover, mode, tileId, rotation, brush, overlay, origin, aim, ov, projecting,
       measureFrom, measureTo, measurement, showZones, showCalibration, seeable, shown, textureTick,
-      tokenTick, noiseKind, zoom, showOptions, found, startCells]);
+      tokenTick, noiseKind, zoom, showOptions, startCells]);
 
   // Scrolling and resizing the stage move the window over the deck.
   useEffect(() => {
@@ -3818,10 +3774,10 @@ export default function BattleMap({
           {num('Sense ft', senseFt, setSenseFt, 5, 2500, 5)}
           <span className="bm-hint">
             Click a DOOR to change it: closed, then open, then jammed, then closed
-            again (right-click a door to set it directly). Opening one lights what
-            it joins, and the party is taken through it, so shutting a door behind
-            them takes the way they came off the board and opening it again brings
-            it straight back. A jammed door blocks like a shut one. Click a room to
+            again (right-click a door to set it directly). Opening one lights the
+            room beyond; shutting it again hides that room, not the way back, as if
+            the party had fallen back and pulled it to. A jammed door blocks like
+            a shut one. Click a room to
             reveal it by hand. Ctrl-click takes a place back, drag reveals square by
             square, alt-click reveals line of sight from a square, and shift-click
             is a sense sweep, the way Detect Magic does it — it reads through walls
@@ -3866,77 +3822,6 @@ export default function BattleMap({
             onClick={() => { originRef.current = null; setOrigin(null); setAim(null); }}>Clear overlay</button>
         </>)}
       </div>
-
-      {/* THE PLAY TAB'S LISTS. The doors and the rooms of the map, each one a
-          click away without finding it on the map: a door sets to any of its
-          three states, a room is revealed or taken back, and the flag says
-          where the party starts. They do what clicking on the map does. */}
-      {tab === 'play' && (
-        <div className="bm-play">
-          <div className="bm-playcol">
-            <div className="bm-playh">Doors <span>{doorList.length}</span></div>
-            {doorList.length === 0 ? (
-              <p className="bm-hint">This map has no doors. Draw some on the Build tab.</p>
-            ) : (
-              <ul className="bm-doors">
-                {doorList.map((d) => {
-                  const onBoard = !shown || Boolean(shown[d.key]);
-                  return (
-                    <li key={d.key} className={'bm-door' + (onBoard ? '' : ' away')}>
-                      <button type="button" className="bm-find" onClick={() => findCell(d)}
-                        title={onBoard ? 'Find it on the map' : 'Not on the board yet. Find it on the map'}>
-                        {d.kind === 'trapdoor' ? 'Trapdoor' : 'Door'} {d.x},{d.y}
-                      </button>
-                      <span className="bm-joins">
-                        {d.joins.length ? d.joins.map((j) => j + 1).join(' \u2194 ') : ''}
-                      </span>
-                      {DOOR_STATES.map((st) => (
-                        <button key={st} type="button" aria-pressed={d.state === st}
-                          className={'bm-st ' + st + (d.state === st ? ' on' : '')}
-                          title={st === 'open' ? 'Open it, and light what it joins'
-                            : st === 'jammed' ? 'Jam it: it blocks like a shut door'
-                              : 'Shut it'}
-                          onClick={() => clickDoor({ x: d.x, y: d.y }, st)}>{st}</button>
-                      ))}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-          <div className="bm-playcol">
-            <div className="bm-playh">Rooms <span>{roomList.length}</span></div>
-            {roomList.length === 0 ? (
-              <p className="bm-hint">Nothing drawn yet.</p>
-            ) : (
-              <ul className="bm-rooms">
-                {roomList.map((r, i) => {
-                  const fog = m.fog ? roomFog(r, m.explored) : 'lit';
-                  const isStart = startRoom === i;
-                  return (
-                    <li key={i}>
-                      <button type="button" className={'bm-room ' + fog}
-                        title={fog === 'lit' ? 'Take this room off the board' : 'Reveal this room and put the party in it'}
-                        onClick={() => toggleRoom(r, fog)}>
-                        <span>Room {i + 1}</span>
-                        <em>{!m.fog ? 'fog is off' : fog === 'lit' ? 'revealed' : fog === 'part' ? 'part revealed' : 'dark'}</em>
-                      </button>
-                      <button type="button" className={'bm-ico-btn bm-flag' + (isStart ? ' on' : '')}
-                        aria-pressed={isStart} aria-label={isStart ? `Room ${i + 1} is the start` : `Make room ${i + 1} the start`}
-                        title={isStart ? 'The party starts here. Click to clear it' : 'The party starts here'}
-                        onClick={() => patch({ start: isStart ? null : { x: r.rep.x, y: r.rep.y } })}>
-                        <Icon name="flag" size={15} />
-                      </button>
-                      <button type="button" className="bm-find" onClick={() => findCell(r.rep)}
-                        title="Find it on the map">find</button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
 
       {mode === 'overlay' && (
         <div className="bm-measure">
